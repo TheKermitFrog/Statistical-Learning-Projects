@@ -1,0 +1,225 @@
+---
+title: "Analysis-05"
+author: "Darren Wang (hsiangw2@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: rmarkdown::github_document
+always_allow_html: true
+urlcolor: BrickRed
+---
+  
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(gridExtra)
+library(nnet)
+```
+
+***
+  
+# Abstract
+  
+> Statistical learning methods were applied to images of hand-written digits in order to classify them by thier flattened attributes. Model such as KNN, random forests, boosted models and neural networks were explored and compared based on their accuracy. Out of these models, random forest model produced the best result.
+  
+***
+
+# Introduction
+
+In recent years, with the progress of machines' computational power, neural network, deep learning methods, those long established methods nowadays are widely applied to problems such as audiovisual recognition, natural language processing, and image recognition. However, these methods require a lot of computational power, and if the data is large, these methods often require commercial level computational power. 
+
+Other than state-of-the-art methods such as deep learning, traditional statistical learning methods such as regression, K-nearest neighbors can be used by individuals with limited computational power to build simple but useful machine learning models. In this analysis, statistical learning methods were utilized to build classification models on a moderate size data set containing hand written digits, in order to recognize written digits. Performance of various models were compared in this analysis.
+
+***
+  
+# Methods
+  
+## Data
+
+The data was originated from the MNIST database [^1], it contained images of 60,000 and 10,000 hand writting single digits from 0 to 9. The images, in 28 x 28 pixels, were flattened into 784 scalar. The data was directly downloaded from the MNIST database through download.file function in R, and was unzip utilizing gunzip in R.utils package. The data was further decoded and arrange through two self define function written by the great Doctor David Dalpiaz. Consider my very limited computational power, the data was further sliced into by stratified sampling into a subset containing 1,205 hand written digits, in order to ensure balance between differnt digits.
+
+```{r data, warning = FALSE, include = FALSE}
+# modification of https://gist.github.com/brendano/39760
+# automatically obtains data from the web
+# creates two data frames, test and train
+# labels are stored in the y variables of each data frame
+# can easily train many models using formula `y ~ .` syntax
+
+# download data from http://yann.lecun.com/exdb/mnist/
+download.file("http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz",
+              "train-images-idx3-ubyte.gz")
+download.file("http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz",
+              "train-labels-idx1-ubyte.gz")
+download.file("http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz",
+              "t10k-images-idx3-ubyte.gz")
+download.file("http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz",
+              "t10k-labels-idx1-ubyte.gz")
+
+# gunzip the files
+R.utils::gunzip("train-images-idx3-ubyte.gz")
+R.utils::gunzip("train-labels-idx1-ubyte.gz")
+R.utils::gunzip("t10k-images-idx3-ubyte.gz")
+R.utils::gunzip("t10k-labels-idx1-ubyte.gz")
+
+# helper function for visualization
+show_digit = function(arr784, col = gray(12:1 / 12), ...) {
+  image(matrix(as.matrix(arr784[-785]), nrow = 28)[, 28:1], col = col, ...)
+}
+
+# load image files
+load_image_file = function(filename) {
+  ret = list()
+  f = file(filename, 'rb')
+  readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  n    = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  nrow = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  ncol = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  x = readBin(f, 'integer', n = n * nrow * ncol, size = 1, signed = FALSE)
+  close(f)
+  data.frame(matrix(x, ncol = nrow * ncol, byrow = TRUE))
+}
+
+# load label files
+load_label_file = function(filename) {
+  f = file(filename, 'rb')
+  readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  n = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  y = readBin(f, 'integer', n = n, size = 1, signed = FALSE)
+  close(f)
+  y
+}
+
+# load images
+train = load_image_file("train-images-idx3-ubyte")
+test  = load_image_file("t10k-images-idx3-ubyte")
+
+# load labels
+train$y = as.factor(load_label_file("train-labels-idx1-ubyte"))
+test$y  = as.factor(load_label_file("t10k-labels-idx1-ubyte"))
+
+# stratified sampling 
+stratified_index = createDataPartition(train$y, p = 0.02, list = FALSE)
+train = train[stratified_index, ]
+```
+
+## Modeling
+
+In order to predict which number a given hand written digit is, serveral classification models were explored. Multiclass models, predicting all 10 different digits were considered. Modeling techniques used in this analysis are given as follows: 
+
+- k-nearest neighbors models were considered. The choice of k was chosen using cross-validation. 
+- Random forest models were considered. The choice of the number of features chosen at each attempt were chosen using cross-validation. 
+- Boosted models(gbm) were considered. The choice of the number of trees and interaction depth were choosen using cross-validation. 
+- Neural Network models were considered. The choice of parameters size, decay were choosen using cross-validation. 
+
+```{r cv ctrl}
+# define train control
+fit_ctrl = trainControl(method = "cv", 
+                        number = 5,
+                        savePredictions = "final")
+```
+
+```{r knn, cache = TRUE, warning = FALSE}
+# knn
+set.seed(42)
+knn_mod = train(y ~ .,
+                data = train,
+                trControl = fit_ctrl,
+                method = "knn"
+)
+```
+
+```{r random forest, cache = TRUE}
+# random forest
+set.seed(42)
+rf_mod = train(y ~ .,
+               data = train,
+               trControl = fit_ctrl,
+               method = "rf"
+)
+```
+
+```{r gbm, cache = TRUE, warning = FALSE}
+# gbm
+set.seed(42)
+gbm_mod = train(y ~ .,
+                data = train,
+                trControl = fit_ctrl,
+                method = "gbm",
+                verbose = FALSE
+)
+```
+
+```{r nnet, cache = TRUE, warning = FALSE, include=FALSE}
+# nnet
+set.seed(42)
+nnet_mod = train(y ~ .,
+                data = train,
+                trControl = fit_ctrl,
+                method = "nnet",
+                verbose = FALSE)
+```
+
+## Evaluation 
+
+In order to evaluate the ability of classifiying hand written digits, models were built on the training data subset. To validate these models, the models were fitted with 5 folds cross-validation on the training data. The models were evaluted base on their accuracy of prediction.
+
+***
+  
+# Results
+  
+```{r AUC table}
+acu_table = tibble(Model = c("KNN",
+                             "Random Forest",
+                             "GBM",
+                             "Neural Network"),
+                   Accuracy = c(max(knn_mod$results$Accuracy),
+                                max(rf_mod$results$Accuracy),
+                                max(gbm_mod$results$Accuracy),
+                                nnet_mod$results$Accuracy[2]))
+
+# show 
+acu_table %>% 
+  kable(digits = 3, caption = "Table: Accuracy of Models") %>%
+  kable_styling("striped", full_width = FALSE) 
+```
+
+***
+
+```{r final predict}
+# prediction
+pred = predict(rf_mod, newdata = test)
+
+# prediction accuracy
+mean(pred == test$y)
+
+# confusion matrix
+conf = table(predicted = pred, actual = test$y)
+```
+
+# Discussion
+
+Surprisingly, our best neural networks model showed an accuracy score significantly lower than other models. The other 3 models, random forest with mtry = 39, KNN with 5, gbm model with n.trees = 150, interaction.depth = 3, shrinkage = 0.1 and n.minobsinnode = 10 showed similar well-performed accuracy. This fortified the idea that more complex models may not neccessarily yield better result than simple model, because our least parametrized model - the KNN model, with a training accuracy of `r max(knn_mod$results$Accuracy)`, is higher than `r max(gbm_mod$results$Accuracy)`, from the most complex gbm model. 
+
+```{r show}
+# show 
+conf %>% 
+  kable(caption = "Table: Test Results, Random Forest") %>%
+  kable_styling("striped", full_width = FALSE) %>%
+  column_spec(column = 1, bold = TRUE)
+```
+
+Predicting on testing set, our best model, random forest model with mtry = 39, yielded a testing accuracy of `r mean(pred == test$y)`, considering the inbalance between trianing and testing set (1205 v.s. 10000), this is pretty convincing accuracy. This phenomenon could be argued by the well-structured nature of hand-written digits(most people write number in a same way), however, looking at the confusion matrix above, interesting facts could be observed. 0, 1, 6 are always classified corretly, 2, 3, 5, 8, 9 are sometimes classified incorrectly. 4 is often classified wrongly as 9. This occured because the similarity between 4 and 9, we could further observe that 8 and 3 are sometimes mixed together and same for 2 and 7. In order to improve classification on these particular digits, more data should be collected and used for training.
+
+***
+
+# Reference
+  
+[^1]: [THE MNIST DATABASE](http://yann.lecun.com/exdb/mnist/)

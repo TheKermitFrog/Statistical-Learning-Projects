@@ -1,0 +1,298 @@
+---
+title: "Analysis-02"
+author: "Darren Wang (hsiangw2@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: rmarkdown::github_document
+always_allow_html: true
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(plotROC)
+library(gridExtra)
+library(caretEnsemble)
+```
+
+***
+
+# Abstract
+
+ > Heart disease is one of the most lethal diseases in North America. Statistical learning techniques are used to determine if it is possible to effectively predict the presence of heart disease from existing data. The model built in this study provides solid prediction on the presence of heart disease. Given the result, the future of predicting the presence of heart disease is promising.
+
+***
+
+# Introduction
+
+Heart is without doubt one of the most important organs in our body, that is why heart disease is one of the most lethal diseases. Heart disease is the leading cause of death for both men and women, every year, about 610,000 people die of heart disease in the United States - that is 1 in every 4 deaths. Among all kind of heart disease, coronary heart disease is the most common type, killing about 366,000 people in 2015. [^1] 
+
+There are many risk factors for developing heart disease, some of them are controllable factors like smoking, alcohol intake, and various lifestyle habits, some of the risk factors are non-controllable, such as age, sex, familiy history, etc... [^2] Even based on these risk factors, it is still hard for us to determine the probability of getting heart disease. Statistical learning methods can help us with calculating the odds of getting heart disease based on existing data. In this analysis, we will be building models on the Cleveland Heart Disease Database, the most popular database for heart disease research. [^3]
+
+***
+
+# Methods
+
+## Data
+
+The data was accessed via UCI Machine Learning Repository, which was further processed to simplify the analysis. [^3] It contained information on 740 patients from 4 different locations. Demographic attributes(age, sex), pathological attributes(serum cholestoral in mg/dl, etc...) as well as numbers of narrowed vessels were included in the dataset.
+
+```{r data}
+# read in data
+heart = read.csv("https://fall-2019.stat432.org/analyses/data/heart-disease.csv")
+
+# mutate character columns to factor
+heart = heart %>% 
+  mutate_if(is.character, as.factor)
+
+# create binary response variable
+heart$num_bin = factor(case_when(
+  heart$num == "v0" ~ "none",
+  TRUE ~ "some"
+))
+
+set.seed(42)
+# train-test split
+hrt_tst_trn_split = initial_split(heart, prop = 0.80)
+hrt_trn = training(hrt_tst_trn_split)
+hrt_tst = testing(hrt_tst_trn_split)
+```
+
+## Modeling
+
+Our goal is to predict the presence of heart disease, therefore, in this analysis we focused on predicting whether a patient has heart disease, but not the exact number of shrunk vessels. In order to predict the presence of heart disease, four modeling techniques were considered: logistic linear models, k-nearest neighbors models, and decision tree models, and random forest models: 
+
+- Logistic linear models with and without ridge, lasso and elastic net penalty terms were considered. Data was scaled and centered before modeling.
+- k-nearest neighbors models with and without scaling training data were considered. Models were trained using all available predictor variables. The choice of k was chosen using cross-validation.
+- Decision tree models were trained using all available predictors. The choice of the complexity parameter was chosen using cross-validation. 
+- Random forest models were trained using all available predictors. The choice of the number of features chosen at each attempt were chsoen using cross-validation.
+
+The final model was a random forest model built on top of the predictions of three best models above, that is, an ensemble model with logistic regression.
+
+```{r cv ctrl}
+fit_control = trainControl(method = "cv", 
+                           number = 5,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           savePredictions = "final")
+```
+
+```{r linear models, warning = FALSE}
+# logistic model
+set.seed(42)
+lgt_mod = train(num_bin ~ . -num,
+              data = hrt_trn,
+              trControl = fit_control,
+              method = "glm",
+              metric = "ROC",
+              preProcess = c("center", "scale"),
+              family = binomial()
+              )
+
+# logistic model with penalty terms
+set.seed(42)
+lgt_pen_mod = train(num_bin ~ . -num,
+                    data = hrt_trn,
+                    trControl = fit_control,
+                    method = "glmnet",
+                    metric = "ROC",
+                    preProcess = c("center", "scale"),
+                    family = "binomial"
+                    )
+```  
+
+```{r knn}
+#knn without rescaling and centering
+set.seed(42)
+knn_mod = train(num_bin ~ . -num,
+              data = hrt_trn,
+              trControl = fit_control,
+              method = "knn",
+              metric = "ROC"
+              )
+
+#knn without rescaling and centering
+set.seed(42)
+knn_std_mod = train(num_bin ~ . -num,
+                    data = hrt_trn,
+                    trControl = fit_control,
+                    method = "knn",
+                    metric = "ROC",
+                    preProcess = c("center", "scale")
+                    )
+```
+
+```{r decision tree}
+# decision tree with rpart
+set.seed(42)
+tree_mod = train(num_bin ~ . -num,
+                 data = hrt_trn,
+                 trControl = fit_control,
+                 method = "rpart",
+                 metric = "ROC"
+                 )
+```
+
+```{r random forest}
+# random forest with rf
+set.seed(42)
+rf_mod = train(num_bin ~ . -num,
+                 data = hrt_trn,
+                 trControl = fit_control,
+                 method = "rf",
+                 metric = "ROC"
+                 )
+```
+
+## Evaluation 
+
+To evaluate the ability to predict presence of heart disease, the data was split into training, and testing sets, with a 80:20 proportion. In order to validate the models, the models were fitted with 5 folds cross-validation on the training data. Considering the cost of falsely identify patients with heart disease as healthy is much higher than the other way around. (The cost of false negative is much higher than false positive), we might need to change the cutoff point, therefore, it would be more logical to compare models by the AUC to get the general callsification power under different cutoff point, instead of comparing accuracy. Average AUC and graphics for each model are reported using the 5 validation data in the Results section. 
+
+***
+
+# Results
+
+```{r AUC table}
+AUC_table = tibble(Model = c("Logistic",
+                             "Losgistic with Penalty",
+                             "KNN",
+                             "KNN with Scaling and Centering Data",
+                             "Tree",
+                             "Random Forest"),
+                   AUC = c(lgt_mod$results$ROC,
+                           max(lgt_pen_mod$results$ROC),
+                           max(knn_mod$results$ROC),
+                           max(knn_std_mod$results$ROC),
+                           max(tree_mod$results$ROC),
+                           max(rf_mod$results$ROC))
+                   )
+# round the AUC
+AUC_table$AUC = round(AUC_table$AUC, 3)
+
+# show 
+kable(AUC_table) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+```{r, graphical-results, fig.height = 4, fig.width = 12, warning = FALSE}
+# 1. logistic
+
+p1 = ggplot(lgt_pen_mod$pred, 
+       aes(m = some, d = factor(obs, levels = c("some", "none")))) + 
+  geom_roc(color = "navyblue") +
+  ggtitle("Logistic with Penalty") +
+  xlab("False Positive Fraction") +
+  ylab("True Positive Fraction") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# 2. KNN with Scaling and Centering
+
+p2 = ggplot(knn_std_mod$pred, 
+       aes(m = some, d = factor(obs, levels = c("some", "none")))) + 
+  geom_roc(color = "orange") +
+  ggtitle("KNN with Scaling and Centering") +
+  xlab("False Positive Fraction") +
+  ylab("True Positive Fraction") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# 3. Random Forest
+
+p3 = ggplot(rf_mod$pred, 
+       aes(m = some, d = factor(obs, levels = c("some", "none")))) + 
+  geom_roc(color = "darkgreen") +
+  ggtitle("Random Forest") +
+  xlab("False Positive Fraction") +
+  ylab("True Positive Fraction") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# arrange horizontally
+grid.arrange(p1, p2, p3, ncol = 3)
+```
+
+***
+
+```{r final mod, warning = FALSE, message = FALSE, include = FALSE}
+# predictions as training data
+preds = data.frame(logit = predict(lgt_pen_mod, newdata = hrt_trn, type = "prob")[, 2],
+           knn = predict(knn_std_mod, newdata = hrt_trn, type = "prob")[, 2],
+           rf_mod = predict(rf_mod, newdata = hrt_trn, type = "prob")[, 2],
+           num_bin = hrt_trn$num_bin)
+
+# build model on top of predictions
+set.seed(42)
+ens_mod = train(num_bin ~ .,
+              data = preds,
+              trControl = fit_control,
+              method = "rf",
+              metric = "ROC"
+              )
+```
+
+```{r ensemble AUC}
+AUC_best = tibble(Model = "Final Model",
+                   AUC = max(ens_mod$results$ROC))
+
+# round the AUC
+AUC_best$AUC = round(AUC_best$AUC, 3)
+
+# show 
+kable(AUC_best) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+```{r, best model AUC plot, fig.height = 4, fig.width = 4, warning = FALSE}
+ggplot(ens_mod$pred, 
+       aes(m = some, d = factor(obs, levels = c("some", "none")))) + 
+  geom_roc(color = "darkred") +
+  ggtitle("ROC Curve for Final Model") +
+  xlab("False Positive Fraction") +
+  ylab("True Positive Fraction") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+```{r final predict}
+# data for final model to make predictions on 
+tst_pred = data.frame(logit = predict(lgt_pen_mod, newdata = hrt_tst, type = "prob")[, 2],
+           knn = predict(knn_std_mod, newdata = hrt_tst, type = "prob")[, 2],
+           rf_mod = predict(rf_mod, newdata = hrt_tst, type = "prob")[, 2])
+
+# prediction
+ens_pred = predict(ens_mod, newdata = tst_pred)
+
+# confusion matrix
+#mean(ens_pred == hrt_tst$num_bin)
+```
+
+# Discussion
+
+By the AUC area, the best three models chosen for ensembling the final model were: 
+- Logistic model with a elastic net peanalty term alpha = 0.1, and lambda = 0.0005
+- KNN with scaled and centered data, k = 7
+- Rondom Forest with mtry = 2
+The ensemble model with these three model has an AUC of 0.996, about 0.1 higher than three best models. It had a testing accuracy of `r mean(ens_pred == hrt_tst$num_bin)`. Overall, the predicting power of the final model was pretty solid. Even with a moderate size of data, the prediction of existing heart disease is reliable. When given bigger data, and more features, the future of prediction on the presence of heart disease with statistical learning methods is promising. 
+
+Given the fact that the cost involves in false positve is much lower than false negative, the best action to take next would be tuning cutoff point of our model, trading some overall accuracy with a higher specificity rate. Since we could successfully predict the presence of heart disease with simple statistical learning methods, prediction on the number of shrunk vessels is next to be considered, as it tells more information on the severity than only the presence of heart disease.
+
+The deficiency of this analysis lies within the lack of data, model building on only 740 patients from 3 regions is obviously not going to provide reliable result for patients outside of these three regions. In order to get a more general result, some other possible directions to further this study include increasing the data size, adding features, adding data of patients outside of North America.
+
+***
+
+# Reference
+
+[^1]: [Heart Disease Fact Sheet](https://www.cdc.gov/dhdsp/data_statistics/fact_sheets/fs_heart_disease.htm)
+[^2]: [Heart Disease Symptoms and Causes ](https://www.mayoclinic.org/diseases-conditions/heart-disease/symptoms-causes/syc-20353118)
+[^3]: [Cleveland Heart Disease Database](https://archive.ics.uci.edu/ml/datasets/Heart+Disease)
