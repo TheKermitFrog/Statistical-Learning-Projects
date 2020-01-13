@@ -1,0 +1,278 @@
+---
+title: "Analysis-04"
+author: "Darren Wang (hsiangw2@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: rmarkdown::github_document
+always_allow_html: true
+urlcolor: BrickRed
+---
+  
+  ```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(gridExtra)
+library(nnet)
+```
+
+***
+  
+# Abstract
+  
+> Statistical learning methods were applied to wine data in order to classify wine samples by their quality. Parametric model such as logistic regression and non-parametric models such as KNN, random forests were explored. None of the models provided predictions accurate enough to suggest its usage in real world. More data collection should be made to imrpove the study.
+  
+***
+  
+# Introduction
+  
+Studies show that drinking wine is benefiacial to individual's health in a variety of ways [^1] when consume moderately, benefits includes reducing inflammation, maintaining heart health, etc... Nowadays, wine drinking much more than an activitiy to do in leisure, it's an representation of higher social class, and a form of art. However, as popular as drinking wine being, the method of determining qualities of wines remians the old-fashioned way - by the taste of wine experts. For wine brewers, quality of wine directly affect their price and sales. Relying fully on wine expert's subjective taste to determine wine's quality is very risky.
+
+As technologies keep on progress, there are more and more attributes such as pH value, and amount of chemicals in wine can be percisely measured. The goal of this analysis is to predict the quality of wine based on its attributes. Statistical learning technique would be used to build models on existing data and make poredictions.
+
+***
+  
+# Methods
+  
+## Data
+  
+The data originates from the UCI machine learning repository [^2]. 6,497 red and white vinho verde wine samples, from the north of Portugal were included in the dataset. The data was accessed directly in R from source via the ucidata package on Github.
+
+The data contained 13 varaibles including chemical attributes such as pH value, density. Amount of some matters that potentially affect the taste such as sulphates, sulfur dioxide, citric acid were also included. There was also a categorical variable indicating wheter a sample is red or white wine. 
+
+Theoretically, each sample of wine was evluated by quality measure ranging from 0 to 10. However, none of the wine sample in our data has quality 0, 1, 2, and 10. Moreover, there were only 30(0.5%) samples in quality level 3 and 9(0.1%) samples in quality level 9. Even adjusted with resampling methods, these extreme imbalanced was likley to distort our model. Therefore, I grouped quality level 9 and 8 samples together and grouped quality level 3 samples and 4 samples together.
+
+```{r data, warning = FALSE, include = FALSE}
+# load data
+wine = as_tibble(ucidata::wine)
+
+# quality as factor
+wine$quality[wine$quality == 9] = 8
+wine$quality[wine$quality == 8] = "over 8"
+wine$quality[wine$quality == 3] = 4
+wine$quality[wine$quality == 4] = "4 and under"
+wine$quality = factor(wine$quality)
+
+# recode color with one-hot encoding
+wine$color = model.matrix( ~ color - 1, data = wine)[, 1]
+
+set.seed(42)
+# train-test split
+wine_tst_trn_split = initial_split(wine, prop = 0.80)
+wine_trn = training(wine_tst_trn_split)
+wine_tst = testing(wine_tst_trn_split)
+```
+
+## Modeling
+
+In order to predict the quality of wine, serveral classification stategies were explored. Both multiclass models, using all 7 quality levels was considered. Modeling techniques used in this analysis are given as follows:
+  
+  - Multiclass logistic regression model through `nnet` package was considered. Data was scaled and centered before modeling.
+- k-nearest neighbors models with and without standardizing training data were considered. Models were trained using all available predictor variables. The choice of k was chosen using cross-validation.
+- Random forest models were trained using all available predictors. The choice of the number of features chosen at each attempt were chosen using cross-validation.
+- Boosted models(gbm) were trained using all available predictors. The choice of the number of trees and interaction depth were choosen using cross-validation.
+
+### Resampling 
+
+As shown below, even after the data was regrouped, the numbers of samples in each quality level in our dataset was extremely imbalanced, such imbalance in the data would lead to the distortion of our models prediction. In order to deal with that potential problem, SMOTE, a minority oversampling technique was applied to the training data before multiclass model training. Models trained with and without resampling were considered and evaluated.
+
+```{r quality hist, warning = FALSE}
+ggplot(data = wine, aes(x = quality)) +
+  geom_histogram(stat = "count") + 
+  ggtitle("Wine Quality Distribution") + 
+  xlab("Quality") +
+  ylab("Count") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r cv ctrl}
+# define train control
+fit_ctrl = trainControl(method = "cv", 
+                        number = 5,
+                        savePredictions = "final")
+
+smote_ctrl = trainControl(method = "cv",
+                          number = 5,
+                          savePredictions = "final",
+                          sampling = "smote")
+```
+
+```{r linear models, warning = FALSE, cache = TRUE}
+# logistic model
+set.seed(42)
+lgt_mod = train(quality ~ .,
+                data = wine_trn,
+                trControl = fit_ctrl,
+                method = "multinom",
+                preProcess = c("center", "scale"),
+                trace = FALSE
+)
+
+# logistic model with SMOTE
+set.seed(42)
+lgt_mod_res = train(quality ~ .,
+                    data = wine_trn,
+                    trControl = smote_ctrl,
+                    method = "multinom",
+                    preProcess = c("center", "scale"),
+                    trace = FALSE
+)
+
+```  
+
+```{r knn, cache = TRUE}
+# knn
+set.seed(42)
+knn_mod = train(quality ~ .,
+                data = wine_trn,
+                trControl = fit_ctrl,
+                method = "knn"
+)
+
+# knn with SMOTE
+set.seed(42)
+knn_mod_res = train(quality ~ .,
+                    data = wine_trn,
+                    trControl = smote_ctrl,
+                    method = "knn"
+)
+
+# knn with standardization
+set.seed(42)
+knn_std_mod = train(quality ~ .,
+                    data = wine_trn,
+                    trControl = fit_ctrl,
+                    method = "knn",
+                    preProcess = c("center", "scale")
+)
+
+# knn with standardization and SMOTE
+set.seed(42)
+knn_std_mod_res = train(quality ~ .,
+                        data = wine_trn,
+                        trControl = smote_ctrl,
+                        method = "knn",
+                        preProcess = c("center", "scale")
+)
+```
+
+```{r random forest, cache = TRUE}
+# random forest
+set.seed(42)
+rf_mod = train(quality ~ .,
+               data = wine_trn,
+               trControl = fit_ctrl,
+               method = "rf"
+)
+
+# random forest and SMOTE
+set.seed(42)
+rf_mod_res = train(quality ~ .,
+               data = wine_trn,
+               trControl = smote_ctrl,
+               method = "rf"
+)
+```
+
+```{r gbm, cache = TRUE}
+# gbm
+set.seed(42)
+gbm_mod = train(quality ~ .,
+                data = wine_trn,
+                trControl = fit_ctrl,
+                method = "gbm",
+                verbose = FALSE
+)
+
+# gbm with SMOTE
+set.seed(42)
+gbm_mod_res = train(quality ~ .,
+                    data = wine_trn,
+                    trControl = smote_ctrl,
+                    method = "gbm",
+                    verbose = FALSE
+)
+```
+
+## Evaluation 
+
+In order to evaluate the ability of predicting wine quality, the data was split into training, and testing sets, with a 80/20 proportion. To validate these models, the models were fitted with 5 folds cross-validation on the training data with and without SMOTE resampling. If modeled with SMOTE resampling, the minority quality levels in estimation dataset was oversampled by SMOTE in each step of cross-validation. The models were evaluted base on their accuracy of prediction.
+
+***
+  
+# Results
+  
+```{r AUC table}
+acu_table = tibble(Model = c("Logistic",
+                             "Losgistic with SMOTE",
+                             "KNN",
+                             "KNN with SMOTE",
+                             "KNN with standardization",
+                             "KNN with standardization and SMOTE",
+                             "Random Forest",
+                             "Random Forest with SMOTE",
+                             "GBM",
+                             "GBM with SMOTE"),
+                   Accuracy = c(max(lgt_mod$results$Accuracy),
+                                max(lgt_mod_res$results$Accuracy),
+                                max(knn_mod$results$Accuracy),
+                                max(knn_mod_res$results$Accuracy),
+                                max(knn_std_mod$results$Accuracy),
+                                max(knn_std_mod_res$results$Accuracy),
+                                max(rf_mod$results$Accuracy),
+                                max(rf_mod_res$results$Accuracy),
+                                max(gbm_mod$results$Accuracy),
+                                max(gbm_mod_res$results$Accuracy))
+)
+
+# show 
+acu_table %>% 
+  kable(digits = 3, caption = "Table: Accuracy of Models") %>%
+  kable_styling("striped", full_width = FALSE) 
+```
+
+***
+
+```{r final predict}
+# prediction
+pred = predict(rf_mod, newdata = wine_tst)
+
+# confusion matrix
+conf = table(predicted = pred, actual = wine_tst$quality)
+```
+
+# Discussion
+
+Surprisingly, models with SMOTE resampling within each fold of cross-validation were outperformed by models without resampling. I would claim that is because the extremely imbalance between each of the quality levels, and thus the lack of diversity within the vairbles of the minority quality levels.
+
+Among all the models, random forest model with mtry = 2 clearly outperformed the others, giving a 68.2% overall accuracy. The model was further tested by making prediction on the test data set, giving a `r 100 * round(mean(pred == wine_tst$quality), 3)`% of accuracy and confusion matrix as followed:
+
+```{r}
+# show 
+conf %>% 
+  kable(caption = "Table: Test Results, Random Forest") %>%
+  kable_styling("striped", full_width = FALSE) %>%
+  column_spec(column = 1, bold = TRUE)
+```
+
+As shown in the confusion matrix, despite the somewhat reliable predictions for quality 5, 6, and 7, however, it had a hard time identifying quality 4 and under as well as quality over 8. In fact, for 68 samples in the test data set that had quality 4 and under, only 4 were correctly classified as 4 and under, that's about 6% of accuracy. Therefore, I concluded that this model was not usefel, as it failed to produce reliable prediction.
+
+There were other concerns about this model. First of all, the extremely imbalance between the overall quality should be addressed in order to improve the model, 9 and 30 samples within quality 4 and 9, would cause problems in prediction even with oversampling method(we were overfitting in those minority qualities). Moreover, there were no data from quality 3 and under and quality 10, which mean that our model would never predice a sample has quality below 3 or a perfect quality. Therefore, more data should be collected to improve the model. 
+
+Second, the data we used for modeling were all vinho verde wine samples from the north of Portugal, which was not generalized enough to produce reliable result when encounter wine from outside of Portugal, or wine that is not vinho verde. This further implies that we need to collect more data in order to generalized the prediction of our model.
+
+***
+  
+# Reference
+  
+[^1]: [Health Effects of Wine](https://en.wikipedia.org/wiki/Health_effects_of_wine)
+[^2]: [Wine Quality Dataset](http://archive.ics.uci.edu/ml/datasets/Wine+Quality)

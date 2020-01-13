@@ -1,0 +1,242 @@
+---
+title: "Analysis-03"
+author: "Darren Wang (hsiangw2@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: rmarkdown::github_document
+always_allow_html: true
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(gridExtra)
+library(DMwR)
+```
+
+***
+
+# Abstract
+
+ > Credit card frauds cost banks a lot of troubles and money. Statistical learning techniques are used to determine if it is possible to effectively identify whether a given transaction is fraudulent from existing data. The model built in this study provides solid prediction on the presence of transaction. Given the result, the future of predicting credit card fraud is promising.
+
+***
+
+# Introduction
+
+Credit card fraud happens everyday, everywhere. According to Wikipedia [^1], although incidences of credit card fraud are limited to about 0.1% of all card transactions, they have resulted in huge financial losses as the fraudulent transactions have been large value transactions. In 1999, out of 12 billion transactions made annually, approximately 10 million—or one out of every 1200 transactions—turned out to be fraudulent. Banks today have state-of-the-art methods to prevent frauds from happening, fruad detection is one of them.
+
+Given the amount of transactions data and customer information banks have gathered, statistical learning techniques that built on existing data could help to build tools for identify fraudulent transactions. The goal of this model built with statistical learning techniques would be to predict whether a given transaction is fraudulent based on a numbers of variables that were produced by dimensionality reduction methods, as well as transaction amount and time.
+
+***
+
+# Methods
+
+## Data
+
+The data originates from a research collaboration of Worldline and the Machine Learning Group [^2] of ULB (Université Libre de Bruxelles) on big data mining and fraud detection. The data was accessed via the magic function provide by professor David Dalpiaz from Kaggle's Credit Card Fraud Detection Competition. [^3]
+
+The data contained 284,807 transaction records, each record had 31 attributes, including:
+
+-28 variables denoted by V1 through V28, these variables were produced by unspecified dimensionality reduction technique.
+-Amount: Transaction amount
+-Time: Number of seconds elapsed between this transaction and the first transaction in the dataset
+-Class: 1 for fraudulent transactions, 0 otherwise
+
+The data was further sliced into a subset that contained 50,000 transaction because of my limited computational power, and Time variable was leave out of this analysis.
+
+```{r data, warning = FALSE, include = FALSE}
+# read in data
+credit = readr::read_csv("https://stat432.org/data/creditcard.csv.gz")
+
+# make response a factor with names instead of numbers
+credit$Class = factor(ifelse(credit$Class == 0, "genuine", "fraud"))
+
+# subset for efficiency
+set.seed(42)
+sub_idx = sample(nrow(credit), size = 50000)
+credit_sub = credit[sub_idx, ]
+
+set.seed(42)
+# train-test split
+cc_tst_trn_split = initial_split(credit_sub, prop = 0.80)
+cc_trn = training(cc_tst_trn_split)
+cc_tst = testing(cc_tst_trn_split)
+```
+
+## Modeling
+
+In order to predict whether a transaction is fraudulent, four binary calssification techniques were applied to the data:
+
+- Logistic model, data was scaled and centered before modeling.
+- k-nearest neighbors models with and without scaling training data were considered. Models were trained using all available predictor variables. The choice of k was chosen using cross-validation.
+- Random forest models were trained using all available predictors. The choice of the number of features chosen at each attempt were chosen using cross-validation.
+- Boosted models(gbm) were trained using all available predictors. The choice of the number of trees and interaction depth were choosen using cross-validation.
+
+### Resampling 
+
+Given the fact that our dataset contained only `r round(mean(credit$Class == "fraud"), 3) * 100` percent of fraudulent transactions, such inbalance in the data would lead to the distortion of our models prediction. In order to deal with that problem, SMOTE, a minority oversampling technique were applied to the training data before modeling.
+
+```{r cv ctrl}
+# define train control
+fit_control = trainControl(method = "cv", 
+                           number = 10,
+                           classProbs = TRUE,
+                           savePredictions = "final",
+                           summaryFunction = twoClassSummary,
+                           sampling = "smote")
+```
+
+```{r linear models, warning = FALSE}
+# logistic model
+set.seed(42)
+lgt_mod = train(Class ~ . - Time,
+              data = cc_trn,
+              trControl = fit_control,
+              method = "glm",
+              metric = "Sens",
+              preProcess = c("center", "scale"),
+              family = binomial()
+              )
+```  
+
+```{r knn}
+#knn without rescaling and centering
+set.seed(42)
+knn_mod = train(Class ~ . - Time,
+              data = cc_trn,
+              trControl = fit_control,
+              method = "knn",
+              metric = "Sens"
+              )
+
+#knn without rescaling and centering
+set.seed(42)
+knn_std_mod = train(Class ~ . - Time,
+                    data = cc_trn,
+                    trControl = fit_control,
+                    method = "knn",
+                    metric = "Sens",
+                    preProcess = c("center", "scale")
+                    )
+```
+
+```{r random forest}
+# random forest with rf
+set.seed(42)
+rf_mod = train(Class ~ . - Time,
+                 data = cc_trn,
+                 trControl = fit_control,
+                 method = "rf",
+                 metric = "Sens"
+                 )
+```
+
+```{r gbm}
+# gbm with rf
+set.seed(42)
+gbm_mod = train(Class ~ . - Time,
+                 data = cc_trn,
+                 trControl = fit_control,
+                 method = "gbm",
+                 metric = "Sens",
+                 verbose = FALSE
+                 )
+```
+
+## Evaluation 
+
+In order to evaluate the ability of predicting whether a given transaction is fraudulent, the data was split into training, and testing sets, with a 80:20 proportion. In order to validate the models, the models were fitted with 10 folds cross-validation on the training data, in each step of cross-validation, the fraudulent transactions in estimation dataset was oversampled by SMOTE. Considering the cost of identifying gunuine transaction as fraudulent is much lower than identifying fraud transactions as gunuine. (The cost of false negative is much higher than false positive), the models were trained to optimized thier sensitivities, in other words, their ability to correctly identify fraudulent transactions as fraudulent. The models were further compared with each other with by considering AUC, sensitivity and Specificity at once. The best model was further evaluate by predicting on test data and going through a custom loss function specified below:
+
+```{r loss function tibble}
+# create loss function tibble
+loss = tibble(Actual = c("Fraud", "Fraud", "Genuine", "Genuine"),
+              Predicted = c("Genuine", "Fraud", "Genuine", "Fraud"),
+              Loss = c("0.5 x (Actual Amount)", 0, 0, 1))
+
+# show 
+kable(loss) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+***
+
+# Results
+
+```{r AUC table}
+AUC_table = tibble(Model = c("Logistic",
+                             "KNN",
+                             "KNN with Standardized Data",
+                             "Random Forest",
+                             "Gradient Boosting"),
+                    AUC = c(lgt_mod$results$ROC,
+                            knn_mod$results[1, ]$ROC,
+                            knn_std_mod$results[2, ]$ROC,
+                            rf_mod$results[3, ]$ROC,
+                            gbm_mod$results[3, ]$ROC),
+                    Sensitivity = c(lgt_mod$results$Sens,
+                            knn_mod$results[1, ]$Sens,
+                            knn_std_mod$results[2, ]$Sens,
+                            rf_mod$results[3, ]$Sens,
+                            gbm_mod$results[3, ]$Sens),
+                    Specificity = c(lgt_mod$results$Spec,
+                            knn_mod$results[1, ]$Spec,
+                            knn_std_mod$results[2, ]$Spec,
+                            rf_mod$results[3, ]$Spec,
+                            gbm_mod$results[3, ]$Spec)
+                   )
+
+# round the AUC
+AUC_table[, 2:4] = round(AUC_table[, 2:4], 3)
+
+# show 
+kable(AUC_table) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+***
+
+```{r rf predict and loss}
+# predict on test data
+rf_pred = predict(rf_mod, newdata = cc_tst, type = "raw")
+
+# confusion matrix
+confu = confusionMatrix(data = predict(rf_mod, newdata = cc_tst, type = "raw"),
+                reference = cc_tst$Class,
+                positive = "fraud")
+
+# maximun loss
+rf_max = max(cc_tst[(rf_pred == "genuine" & cc_tst[,"Class"] == "fraud"), 
+       "Amount"] * 0.5)
+
+# average loss
+rf_loss = (sum(cc_tst[(rf_pred == "genuine" & cc_tst[,"Class"] == "fraud"), 
+       "Amount"] * 0.5) + sum(rf_pred == "fraud" & cc_tst[,"Class"] == "genuine")) / 9999
+```
+
+# Discussion
+
+By the result table, the random forest model with mtry = 29, and gradient boosting model with n.trees = 50, interaction.depth = 3, shrinkage = 0.1
+ and n.minobsinnode = 10 shared a AUC value of 0.984, which outperformed the other models. Even though the random forest model had a slightly smaller specificity value comapring to gradient boosting model, its sensitivity is higher. We cared more about the sensitivity in the settings of this analysis therefore the ramdom forest model with mtry = 29 was the best model here. Furthermore, the random forest model produced a 97.5% accuracy on test data, followed by 82% of sensitivity and 97.5% specificity. The average loss per transaction on test data for random forest model was `r round(rf_loss)` and the maximum loss was `r round(rf_max)`.
+
+Given the solid numbers on testing data the random forest model produced, the model was not recommend to be put into practice. First, taking the fact that frauds evolve overtime into account, how long will the model keep producing reliable result remains unknown. Moreover, in terms of scalability of the model, the dimensionality reduction technique applied to raw data might cause problems in the future, banks collect new transaction attributes overtime and the same technique might fail to deal with bigger dimensionality of data.
+
+It is certain that this model and analysis could still be improved, first of all, we used only a small subset of data to fit our models, fitting models to a larger dataset could substantailly boost the prediciton. Second, 80% of the transactions in our data had transaction amount under 100, whereas the maximum amount of transaction was 25691, this kind of inbalance in the data could cause our model to have weak predictive power when encounter transactions with higher amount. Last but not the least, the sensitivity of our model could still be improved by trading off some overall accurarcy.
+
+***
+
+# Reference
+
+[^1]: [Credit Card Fraud](https://en.wikipedia.org/wiki/Credit_card_fraud)
+[^2]: [Worldline and the Machine Learning Group](http://mlg.ulb.ac.be)
+[^3]: [Credit Card Fraud Detection](https://www.kaggle.com/mlg-ulb/creditcardfraud)
