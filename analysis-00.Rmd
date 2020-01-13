@@ -2,11 +2,7 @@
 title: "Are Sleep Trackers Effective?"
 author: "Darren Wang (hsiangw@illinois.edu)"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
-output:
-  html_document: 
-    theme: cosmo
-    toc: yes
-  pdf_document: default
+output: rmarkdown::github_document
 urlcolor: BrickRed
 ---
 
