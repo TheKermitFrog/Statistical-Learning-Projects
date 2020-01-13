@@ -1,0 +1,249 @@
+---
+title: "Are Sleep Trackers Effective?"
+author: "Darren Wang (hsiangw@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(caret)
+library(rpart)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(gridExtra)
+```
+
+***
+
+# Abstract
+
+ > Personal sleep tracking devices are becoming more and more popular. Statistical learning techniques are used to determine if it is possible to effectively predict time asleep from data that would be available without the aid of a sleep tracker.
+
+***
+
+# Introduction
+
+It is without question that sleep is a very important process for both learning and memory. [^1] For optimal learning, sleep, both in quality and quantity, is required before and after learning. Depending on certain demographic factors, there are different sleep prescriptions, but for adults, a minimum of seven hours is needed to avoid impairment. [^2] Recently, the link between shift work and cancer has been well established. While more study is needed, there seems to be growing evidence that lack of sleep may play a strong causal role in many cancers. [^3] As the public has become more aware of the importance of sleep, the use of "smart" devices to track sleep has risen. Many sleep trackers provide a wealth of information including not only time asleep, but also details such as time spent in the various stages of sleep. (Light, deep, REM.)
+
+The effectiveness of these sleep devices is still in question. [^4] While the breadth of data that they make available is interesting, the most important by far is the total time asleep. (Asleep being defined clinically, not by simply being in bed.) The additional data, such as time in REM sleep, is interesting, however it is unclear what the target values should be, and more importantly, how we could affect change in these numbers. In contrast, there is a wealth of advice on how to increase quality and time spent asleep. [^5] If total time asleep is the only data worth tracking, is a smart device actually necessary? Is it possible to estimate time asleep based on simple metrics such as time spent in bed?
+
+Statistical learning techniques were applied to a four month sample of data from a Fitbit [^6] user. Time spent in bed was used to predict total time asleep. The results indicate that this prediction can be made with a reasonably small amount of error. However, practical and statistical limitations suggest the need for further investigation.
+
+***
+
+# Methods
+
+## Data
+
+The data was accessed via the data export tool provided by Fitbit. [^7] It was collected using a Fitbit Versa 2 by a single subject, a 32 year old adult male living in Ohio and working as a professor. The Fitbit Versa 2 uses both motion and heart rate variability [^8] to predict when the user is sleeping. The collection dates were a series of consecutive days in autumn of 2018. The two quantities of interest in the data are the time spent asleep and the time spent in bed each time the user sleeps. (A user could sleep more than once a day. For example, a two hour nap in the afternoon.) If the former can be predicted from the latter, the device seems unnecessary. (Time spent in bed could simply be tracked manually by a user. Although, it should be noted that one of the benefits of the devices is the automatic tracking of this quantity, which is probably more accurate than manual human tracking.)
+
+```{r, load-data, message = FALSE}
+sleep = read_csv(file = "data/fitbit-export-20190904.csv")
+```
+
+```{r, split-data}
+sleep_trn = head(sleep, n = 100)
+sleep_tst = tail(sleep, n = 22)
+
+sleep_est = head(sleep_trn, n = 80)
+sleep_val = tail(sleep_trn, n = 20)
+```
+
+## Modeling
+
+In order to predict time asleep given time in bed, three modeling techniques were considered: linear models, k-nearest neighbors models, and tree models. No transformations were considered with the linear model. Default tuning parameters were used to train the two non-parametric models. Only time in bed was used as a predictor variable.
+
+```{r}
+lm_mod   = lm(min_asleep ~ time_bed,     data = sleep_est)
+knn_mod  = knnreg(min_asleep ~ time_bed, data = sleep_est)
+tree_mod = rpart(min_asleep ~ time_bed,  data = sleep_est)
+```
+
+## Evaluation
+
+To evaluate the ability to predict time asleep with these models, the data was split into estimation, validation, and testing sets. Because of the dependence structure of the data, that is the consecutive nature of the days, the data was split chronologically. That is, the test set is the last 20% of the data chronologically. (And similarly for the validation data.) This is done to evaluate the ability to predict future nights of sleep from past data. Error metrics and graphics are reported using the validation data in the Results section.
+
+***
+
+# Results
+
+```{r, calc-rmse}
+calc_rmse = function(actual, predicted) {
+  sqrt(mean( (actual - predicted) ^ 2) )
+}
+```
+
+```{r, calc-validation-error}
+sleep_val_rmse = c(calc_rmse(actual = sleep_val$min_asleep,
+                             predicted = predict(lm_mod, sleep_val)),
+                   calc_rmse(actual = sleep_val$min_asleep,
+                             predicted = predict(knn_mod, sleep_val)),
+                   calc_rmse(actual = sleep_val$min_asleep,
+                             predicted = predict(tree_mod, sleep_val)))
+```
+
+```{r, numeric-results, full_width = "50%"}
+# Create tibble
+sleep_results = tibble(models = c("Linear", "KNN", "Tree"),
+                       validation_RMSE = sleep_val_rmse)
+
+# Display tibble as a markdown table, make it striped
+kable(sleep_results) %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+```{r, graphical-results, fig.height = 4, fig.width = 12}
+#1. linear regression model
+
+p1 = ggplot(data = data.frame(predicted = predict(lm_mod, sleep_val), 
+                         actual = sleep_val$min_asleep),
+       aes(x = predicted, y = actual)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  xlim(c(280, 550)) +
+  ylim(c(280, 550)) +
+  labs(title = "Actual v.s. Predicted: Linear Model",
+       x = "Predicted min_sleep",
+       y = "Actual min_sleep") +
+  theme_minimal() 
+
+#2. KNN regression model
+p2 = ggplot(data = data.frame(predicted = predict(knn_mod, sleep_val), 
+                         actual = sleep_val$min_asleep),
+       aes(x = predicted, y = actual)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  xlim(c(280, 550)) +
+  ylim(c(280, 550)) +
+  labs(title = "Actual v.s. Predicted: KNN Model",
+       x = "Predicted min_sleep",
+       y = "Actual min_sleep") +
+  theme_minimal() 
+
+#3. Tree based regression model
+p3 = ggplot(data = data.frame(predicted = predict(tree_mod, sleep_val), 
+                         actual = sleep_val$min_asleep),
+       aes(x = predicted, y = actual)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  xlim(c(280, 550)) +
+  ylim(c(280, 550)) +
+  labs(title = "Actual v.s. Predicted: Tree Model",
+       x = "Predicted min_sleep",
+       y = "Actual min_sleep") +
+  theme_minimal() 
+
+# arrange horizontally
+grid.arrange(p1, p2, p3, ncol = 3)
+```
+
+***
+
+# Discussion
+
+```{r, test-rmse}
+# Train models on full training data
+lm_mod_full   = lm(min_asleep ~ time_bed,     data = sleep_trn)
+knn_mod_full  = knnreg(min_asleep ~ time_bed, data = sleep_trn)
+tree_mod_full = rpart(min_asleep ~ time_bed,  data = sleep_trn)
+
+# Calculate test RMSE for each model
+test_rmse_linear = calc_rmse(actual = sleep_tst$min_asleep,
+                             predicted = predict(lm_mod_full, sleep_tst))
+test_rmse_knn = calc_rmse(actual = sleep_tst$min_asleep,
+                             predicted = predict(knn_mod_full, sleep_tst))
+test_rmse_tree = calc_rmse(actual = sleep_tst$min_asleep,
+                             predicted = predict(tree_mod_full, sleep_tst))
+```
+
+The reason of us doing this analysis is **to see whether the time spent asleep can be predicted by the time spent in bed each time the user sleeps**. Each model serves this purpose pretty well, they have relatively small validation RMSE(8, 11 and 15) comparing to the average of validation min_asleep(426.75), but linear regression model and KNN regression clearly outperformed tree based regression model in this case. 
+
+In my opinion, **the linear regression model is the best model here**, one reason is because it has the smallest validation RMSE, which tells us it provides the most accurate prediction. The other reason is because of its interpretability and the relationship it found between the predictor and target variable. Linear regression is a powerful tool if the true relationship between our predictor and target variable is linear, which seems to be the case for this analysis(and shown by the EDA below). **And it turned out that the test RMSE of linear model(`r test_rmse_linear`) is smaller than KNN model(`r test_rmse_knn`), too.**
+
+The results tell us that sleep trackers are kind of unnecessary because we can predict the time spent asleep by the time spent in bed ourselves. There are many limitations to this analysis, to name one, consider if the user's behavior suddenly changed, then our models are likely to failed no matter how well they fit to the data. There certainly are many future directions that should be explored, to improve our model, we could throw more predictors into the linear regression model, we also could tune the K parameter for the KNN model, we should definitely collect more data from more people to get a more general and solid result.
+
+***
+
+# Appendix
+
+## Data Dictionary
+
+- `start_time` - The date and time which the device detected the user has gone to bed due to lack of motion. (But not necessarily started sleep.)
+- `end_time` - The date and time which the device detected that the user is no longer in bed, due to motion.
+- `min_asleep` - The total sleep time, in minutes. This is meant to estimate a clinical measure of sleep. (Not simply time in bed.)
+- `min_awake` - The time spent in bed, but awake, in minutes.
+- `num_awake` - The number of times the user "awoke" during their time in bed.
+- `time_bed` - Duration between `start_time` and `end_time`. The sum of `min_asleep` and `min_awake`. In other words, total time in bed, in minutes.
+- `min_rem` - Total time spent in REM sleep, in minutes.
+- `min_light` - Total time spent in light sleep, in minutes.
+- `min_deep` - Total time spent in deep sleep, in minutes.
+
+## EDA
+
+```{r, eda-plots, fig.height = 4, fig.width = 12}
+plot_1 = sleep_trn %>% 
+  ggplot(aes(x = min_asleep)) + 
+  geom_histogram(bins = 30)
+
+
+plot_2 = sleep_trn %>% 
+  ggplot(aes(x = time_bed)) + 
+  geom_histogram(bins = 30)
+
+
+plot_3 = sleep_trn %>% 
+  ggplot(aes(x = time_bed, y = min_asleep)) + 
+  geom_point()
+
+grid.arrange(plot_1, plot_2, plot_3, ncol = 3)
+```
+
+[^1]: [Harvard Medicine: Sleep, Learning, and Memory](http://healthysleep.med.harvard.edu/healthy/matters/benefits-of-sleep/learning-memory)
+[^2]: [CDC: How Much Sleep Do I Need?](https://www.cdc.gov/sleep/about_sleep/how_much_sleep.html)
+[^3]: [Shift Work and Cancer, The Evidence and the Challenge](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2954516/)
+[^4]: [Consumer sleep tracking devices: a review of mechanisms, validity and utility](https://www.tandfonline.com/doi/abs/10.1586/17434440.2016.1171708)
+[^5]: [Everything you need to know about sleep, but are too tired to ask](https://news.berkeley.edu/2017/10/17/whywesleep/)
+[^6]: [Wikipedia: Fitbit](https://en.wikipedia.org/wiki/Fitbit)
+[^7]: The author would like to note that Fitbit makes it incredibly difficult for users to obtain their own data.
+[^8]: [Wikipedia: Heart rate variability](https://en.m.wikipedia.org/wiki/Heart_rate_variability)
+
+```{r, this-is-bad-code, include = FALSE}
+# what is divisible by 3?
+a_variable = 1:100
+ifelse(a_variable %% 3 == 1, "Yes", "No")
+
+# how long are character strings?
+another_variable = c("hello", "STAT", "432")
+for (i in seq_along(another_variable)) {
+  print(nchar(another_variable[i]))
+}
+
+# just some vectors
+x = 1:100
+y = 5:6
+z = x ^ 2 + y ^ 2
+
+# an if-else statement
+if (1 > 100) {
+  print("HELLO!")
+  } else {
+  print("GOODBYE")
+}
+
+# a simple linear model
+fit = lm(speed~dist, data = cars)
+mean(fit$residuals, na.rm = FALSE)
+```
